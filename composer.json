@@ -1,0 +1,48 @@
+{
+  "name": "shadowbane/laravel-gelf-logger",
+  "type": "library",
+  "description": "Custom laravel monolog logger for gelf logs",
+  "keywords": [
+    "php",
+    "laravel",
+    "gelf",
+    "log",
+    "agent",
+    "gelf-php",
+    "management",
+    "gelf-logger",
+    "api",
+    "monolog",
+    "logger",
+    "handler",
+    "formatter"
+  ],
+  "homepage": "https://github.com/shadowbane/laravel-gelf-logger",
+  "license": "MIT",
+  "require": {
+    "php": "^8.1 || ^8.2",
+    "ext-json": "*",
+    "graylog2/gelf-php": "^2.0",
+    "monolog/monolog": "^3.0"
+  },
+  "require-dev": {
+    "laravel/pint": "^1.0",
+    "orchestra/testbench": "^8.0",
+    "phpstan/phpstan": "^1.8"
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Shadowbane\\GelfLogger\\Providers\\GelfServiceProvider"
+      ]
+    }
+  },
+  "config": {
+    "sort-packages": true
+  },
+  "autoload": {
+    "psr-4": {
+      "Shadowbane\\GelfLogger\\": "src/"
+    }
+  }
+}
