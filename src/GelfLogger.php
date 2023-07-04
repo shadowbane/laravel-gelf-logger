@@ -124,7 +124,7 @@ class GelfLogger
                         $processor === TagProcessor::class
                         || (isset($processor['processor']) && $processor['processor'] === TagProcessor::class)
                     ) {
-                        $tags = $processor['with']['tags'] ?? [];
+                        $tags = (array) ($processor['with']['tags'] ?? []);
                         $tags[] = 'glfapp';
                         $processor['with'] = [
                             'tags' => array_unique($tags),
