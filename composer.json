@@ -1,7 +1,7 @@
 {
   "name": "shadowbane/laravel-gelf-logger",
   "type": "library",
-  "description": "Custom laravel monolog logger for gelf logs",
+  "description": "Custom laravel logger for gelf logs",
   "keywords": [
     "php",
     "laravel",
