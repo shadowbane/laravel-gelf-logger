@@ -20,6 +20,11 @@ return [
         'host' => env('GELF_LOGGER_HOST', '127.0.0.1'),
         'port' => env('GELF_LOGGER_PORT', 12201),
 
+        // Tags for Graylog stream routing.
+        // 'glfapp' is always included (required by Graylog stream rules).
+        // Add extra tags here per-app for filtering within the stream.
+        'tags' => array_filter(array_map('trim', explode(',', env('GELF_LOGGER_TAGS', '')))),
+
         // additional processors
         'processors' => [
             GitProcessor::class,

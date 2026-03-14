@@ -15,55 +15,98 @@ use Monolog\Logger;
 use Monolog\Processor\TagProcessor;
 use Shadowbane\GelfLogger\Formatters\CustomGelfFormatter;
 
+/**
+ * Factory class that creates a configured Monolog Logger for GELF output.
+ *
+ * This class is invoked by Laravel's logging system via the `via` config key.
+ * It assembles the full logging pipeline: transport → publisher → handler → formatter → processors.
+ *
+ * @see GelfHandler
+ * @see CustomGelfFormatter
+ */
 class GelfLogger
 {
+    /**
+     * The logging channel configuration.
+     *
+     * @var array{
+     *     driver: string,
+     *     via: class-string,
+     *     formatter?: class-string<FormatterInterface>,
+     *     handler?: class-string<AbstractProcessingHandler>,
+     *     level: string,
+     *     transport: string,
+     *     host: string,
+     *     port: int,
+     *     tags?: array<int, string>,
+     *     processors?: array<int, class-string|array{processor: class-string, with?: array<string, mixed>}>,
+     * }
+     */
     public array $config;
 
     /**
-     * Create the Gelf Logger.
+     * Create the GELF Logger.
      *
-     * @param array $config [
-     *      via,
-     *      formatter,
-     *      level,
-     *      transport,
-     *      host,
-     *      port,
-     *      processors,
-     * ]
+     * @param  array{
+     *     driver: string,
+     *     via: class-string,
+     *     formatter?: class-string<FormatterInterface>,
+     *     handler?: class-string<AbstractProcessingHandler>,
+     *     level: string,
+     *     transport: string,
+     *     host: string,
+     *     port: int,
+     *     processors?: array<int, class-string|array{processor: class-string, with?: array<string, mixed>}>,
+     * }  $config  The logging channel configuration array
+     *
+     * @throws InvalidArgumentException If required config keys are missing or transport is invalid
      *
      * @return Logger
      */
     public function __invoke(array $config): Logger
     {
         $this->config = $config;
+        $this->validateConfig();
 
-        $gelfHandler = $this->createHandler();
-
-        //        ray($this->getProcessors());
-
-        $logger = (new Logger(
+        return new Logger(
             name: 'gelf',
-            handlers: [$gelfHandler],
+            handlers: [$this->createHandler()],
             processors: $this->getProcessors(),
-            timezone: (new DateTimeZone('UTC')),
-        ));
-
-        return $logger;
+            timezone: new DateTimeZone('UTC'),
+        );
     }
 
     /**
-     * Create new instance of Gelf handler.
+     * Validate that required configuration keys are present.
+     *
+     * @throws InvalidArgumentException If a required config key is missing
+     */
+    private function validateConfig(): void
+    {
+        $required = ['host', 'port', 'transport'];
+
+        foreach ($required as $key) {
+            if (!isset($this->config[$key]) || blank($this->config[$key])) {
+                throw new InvalidArgumentException("GELF logger config key [{$key}] is required.");
+            }
+        }
+    }
+
+    /**
+     * Create a new instance of the GELF handler with formatter attached.
      *
      * @return AbstractProcessingHandler
      */
     private function createHandler(): AbstractProcessingHandler
     {
-        if (!isset($this->config['handler']) || blank($this->config['handler'])) {
-            $this->config['handler'] = GelfHandler::class;
+        $handlerClass = $this->config['handler'] ?? GelfHandler::class;
+
+        if (blank($handlerClass)) {
+            $handlerClass = GelfHandler::class;
         }
 
-        $handler = new $this->config['handler'](
+        /** @var AbstractProcessingHandler $handler */
+        $handler = new $handlerClass(
             publisher: $this->getPublisher(),
             level: $this->getLevel(),
             bubble: true,
@@ -75,80 +118,78 @@ class GelfLogger
     }
 
     /**
+     * Create the formatter instance for GELF messages.
+     *
      * @return FormatterInterface
      */
     private function getFormatter(): FormatterInterface
     {
-        if (blank($this->config['formatter'])) {
-            $this->config['formatter'] = CustomGelfFormatter::class;
+        $formatterClass = $this->config['formatter'] ?? CustomGelfFormatter::class;
+
+        if (blank($formatterClass)) {
+            $formatterClass = CustomGelfFormatter::class;
         }
 
-        return new $this->config['formatter']();
+        return new $formatterClass();
     }
 
     /**
+     * Create a GELF publisher with the configured transport (TCP or UDP).
+     *
+     * @throws InvalidArgumentException If the transport type is not 'tcp' or 'udp'
+     *
      * @return PublisherInterface
      */
     private function getPublisher(): PublisherInterface
     {
         return match ($this->getTransport()) {
-            'tcp' => new Publisher(
-                new TcpTransport(
-                    $this->getHost(),
-                    $this->getPort(),
-                ),
-            ),
-            'udp' => new Publisher(
-                new UdpTransport(
-                    $this->getHost(),
-                    $this->getPort(),
-                ),
-            ),
-            default => throw new InvalidArgumentException('Invalid transport type'),
+            'tcp' => new Publisher(new TcpTransport($this->getHost(), $this->getPort())),
+            'udp' => new Publisher(new UdpTransport($this->getHost(), $this->getPort())),
+            default => throw new InvalidArgumentException("Invalid GELF transport type [{$this->getTransport()}]. Supported: tcp, udp."),
         };
     }
 
     /**
-     * @return array
+     * Build the array of Monolog processor instances from config.
+     *
+     * Ensures a TagProcessor is always present with 'glfapp' tag (required by Graylog stream rules).
+     * Additional tags from the 'tags' config key are merged in.
+     * Processors can be specified as class strings or arrays with 'processor' and 'with' keys.
+     *
+     * @return array<int, callable>
      */
     private function getProcessors(): array
     {
         $processorArray = collect($this->config['processors'] ?? []);
 
-        $tagProcessor = $processorArray->where('processor', TagProcessor::class);
+        // Remove any user-defined TagProcessor — we'll add our own with merged tags
+        $processorArray = $processorArray->reject(function ($processor) {
+            return $processor === TagProcessor::class
+                || (is_array($processor) && ($processor['processor'] ?? null) === TagProcessor::class);
+        });
 
-        if ($processorArray->where('processor', TagProcessor::class)->count() > 0) {
-            $processorArray = $processorArray
-                ->map(function ($processor) {
-                    if (
-                        $processor === TagProcessor::class
-                        || (isset($processor['processor']) && $processor['processor'] === TagProcessor::class)
-                    ) {
-                        $tags = (array) ($processor['with']['tags'] ?? []);
-                        $tags[] = 'glfapp';
-                        $processor['with'] = [
-                            'tags' => array_unique($tags),
-                        ];
-                    }
+        // Build tags: 'glfapp' is always present, merge with config tags
+        $tags = array_unique(array_merge(
+            ['glfapp'],
+            (array) ($this->config['tags'] ?? []),
+        ));
 
-                    return $processor;
-                });
-        } else {
-            $processorArray->push([
-                'processor' => TagProcessor::class,
-                'with' => [
-                    'tags' => [
-                        'glfapp',
-                    ],
-                ],
-            ]);
-        }
+        $processorArray->push([
+            'processor' => TagProcessor::class,
+            'with' => ['tags' => array_values($tags)],
+        ]);
 
-        return $processorArray->map(fn ($processor) => app()->make($processor['processor'] ?? $processor, $processor['with'] ?? []))
+        return $processorArray
+            ->map(fn ($processor) => app()->make(
+                $processor['processor'] ?? $processor,
+                $processor['with'] ?? [],
+            ))
             ->toArray();
     }
 
     /**
+     * Get the GELF server hostname from config.
+     *
      * @return string
      */
     private function getHost(): string
@@ -157,37 +198,34 @@ class GelfLogger
     }
 
     /**
+     * Get the GELF server port from config.
+     *
      * @return int
      */
     private function getPort(): int
     {
-        return $this->config['port'];
+        return (int) $this->config['port'];
     }
 
     /**
-     * @return string
+     * Get the transport protocol from config.
+     *
+     * @return string Either 'tcp' or 'udp'
      */
     private function getTransport(): string
     {
-        return $this->config['transport'];
+        return strtolower($this->config['transport']);
     }
 
     /**
-     * Convert level string to Monolog Level.
+     * Convert the configured level string to a Monolog Level enum.
      *
      * @return Level
      */
     private function getLevel(): Level
     {
-        return match ($this->config['level']) {
-            'debug', 'Debug', 'DEBUG' => Level::Debug,
-            'notice', 'Notice', 'NOTICE' => Level::Notice,
-            'warning', 'Warning', 'WARNING' => Level::Warning,
-            'error', 'Error', 'ERROR' => Level::Error,
-            'critical', 'Critical', 'CRITICAL' => Level::Critical,
-            'alert', 'Alert', 'ALERT' => Level::Alert,
-            'emergency', 'Emergency', 'EMERGENCY' => Level::Emergency,
-            default => Level::Info,
-        };
+        $level = ucfirst(strtolower($this->config['level'] ?? 'info'));
+
+        return Level::fromName($level);
     }
 }
