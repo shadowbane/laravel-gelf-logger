@@ -127,7 +127,22 @@ The formatter will automatically extract and flatten exception data into GELF ad
 - `exception_message` — The exception message
 - `exception_code` — The exception code
 - `exception_file` — File and line where the exception occurred
-- `exception_trace` — Full stack trace (when available)
+- `exception_trace` — Full stack trace, including the `Caused by:` chain
+
+Anything implementing `Throwable` is handled, so PHP's `Error` hierarchy
+(`TypeError`, `ValueError`, `ArgumentCountError`) is captured alongside `Exception`.
+
+Wrapped exceptions are rendered in full, separated by `Caused by:`. This matters
+because the outermost exception is often a generic wrapper, while the detail that
+identifies the failure lives in the cause:
+
+```
+RuntimeException: Unable to complete request in /app/src/Client.php:88
+#0 …
+
+Caused by: PDOException: SQLSTATE[HY000] [2002] Connection refused in /app/src/Db.php:31
+#0 …
+```
 
 ### Log Context & the `extras` Field
 
@@ -252,7 +267,7 @@ Each log message sent to Graylog includes:
 | `exception_message` | Exception message |
 | `exception_code` | Exception code |
 | `exception_file` | File and line where the exception occurred |
-| `exception_trace` | Full stack trace |
+| `exception_trace` | Stack trace, including the `Caused by:` chain |
 
 ### Extras Field (single JSON field)
 

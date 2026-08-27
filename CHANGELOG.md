@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [2.1.0] - 2026-08-27
+
+### Changed
+- `exception_trace` now renders the full `getPrevious()` chain, separated by `Caused by:`. Previously only the outermost throwable's trace was captured, so wrapped exceptions arrived in Graylog with no indication of the real cause.
+- Exception handling now explicitly checks for `\Throwable` instead of relying on context structure alone. PHP's `Error` hierarchy (`TypeError`, `ValueError`, `ArgumentCountError`) is now captured alongside `Exception`.
+- Removed unused `Throwable` import from `CustomGelfFormatter`
+
+
 ## [2.0.0] - 2026-03-14
 
 ### Added
@@ -46,5 +54,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release.
 
 
+[2.1.0]: https://github.com/shadowbane/laravel-gelf-logger/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/shadowbane/laravel-gelf-logger/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/shadowbane/laravel-gelf-logger/releases/tag/v1.0.0

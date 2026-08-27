@@ -7,7 +7,6 @@ use Monolog\Formatter\GelfMessageFormatter;
 use Monolog\Level;
 use Monolog\LogRecord;
 use Monolog\Utils;
-use Throwable;
 
 /**
  * Custom GELF message formatter that extends Monolog's GelfMessageFormatter.
@@ -241,27 +240,73 @@ class CustomGelfFormatter extends GelfMessageFormatter
      * Extract and flatten exception data from the context array.
      *
      * Converts nested exception data into prefixed keys (e.g., `exception_class`,
-     * `exception_message`) and extracts the stack trace if available.
+     * `exception_message`) and extracts the full throwable chain stack trace.
+     *
+     * Handles the full `getPrevious()` chain, separated by "Caused by:". This matters
+     * because the outermost exception is often a generic wrapper, while the detail that
+     * identifies the failure lives in the cause.
+     *
+     * Anything implementing `Throwable` is handled, so PHP's `Error` hierarchy
+     * (`TypeError`, `ValueError`, `ArgumentCountError`) is captured alongside `Exception`.
      *
      * @param  array<string, mixed>  &$context  The normalized context array (modified in place)
      * @param  array<string, mixed>  $contextRecord  The original context from the log record
      */
     private function handleExceptions(array &$context, mixed $contextRecord): void
     {
-        if (isset($context['exception'])) {
-            if (isset($context['trace'])) {
-                /** @var Throwable $throwable */
-                $throwable = $contextRecord['exception'];
-                $context['exception_trace'] = $throwable->getTraceAsString();
-
-                unset($context['trace'], $context['exception']['trace']);
-            }
-
-            foreach ($context['exception'] as $key => $value) {
-                $context['exception_'.$key] = $value;
-            }
-
-            unset($context['exception']);
+        if (!isset($context['exception'])) {
+            return;
         }
+
+        /** @var \Throwable|null $throwable */
+        $throwable = $contextRecord['exception'] ?? null;
+
+        if ($throwable instanceof \Throwable) {
+            $context['exception_trace'] = $this->formatThrowableChain($throwable);
+            unset($context['trace'], $context['exception']['trace']);
+        }
+
+        foreach ($context['exception'] as $key => $value) {
+            $context['exception_'.$key] = $value;
+        }
+
+        unset($context['exception']);
+    }
+
+    /**
+     * Render a throwable and every throwable it wraps.
+     *
+     * getTraceAsString() describes only the outermost throwable, so when an
+     * exception wraps another the cause never reaches Graylog. The whole chain is
+     * rendered, in full — deciding which frames matter is the reader's job, not
+     * this formatter's.
+     *
+     * @param  \Throwable  $throwable
+     * @return string
+     */
+    private function formatThrowableChain(\Throwable $throwable): string
+    {
+        $parts = [];
+
+        // Termination guard only. A `previous` cycle cannot occur through normal
+        // construction, and this drops nothing that a linear chain would report.
+        $seen = new \SplObjectStorage;
+
+        do {
+            $seen->attach($throwable);
+
+            $parts[] = sprintf(
+                "%s: %s in %s:%d\n%s",
+                get_class($throwable),
+                $throwable->getMessage(),
+                $throwable->getFile(),
+                $throwable->getLine(),
+                $throwable->getTraceAsString()
+            );
+
+            $throwable = $throwable->getPrevious();
+        } while ($throwable !== null && !$seen->contains($throwable));
+
+        return implode("\n\nCaused by: ", $parts);
     }
 }
