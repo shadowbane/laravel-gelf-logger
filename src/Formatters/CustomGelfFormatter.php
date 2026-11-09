@@ -258,8 +258,16 @@ class CustomGelfFormatter extends GelfMessageFormatter
             return;
         }
 
+        // Non-array exception context (e.g. ['exception' => $e->getMessage()]) — send as a single field
+        if (!is_array($context['exception'])) {
+            $context['exception_message'] = $context['exception'];
+            unset($context['exception']);
+
+            return;
+        }
+
         /** @var \Throwable|null $throwable */
-        $throwable = $contextRecord['exception'] ?? null;
+        $throwable = is_array($contextRecord) ? ($contextRecord['exception'] ?? null) : null;
 
         if ($throwable instanceof \Throwable) {
             $context['exception_trace'] = $this->formatThrowableChain($throwable);
