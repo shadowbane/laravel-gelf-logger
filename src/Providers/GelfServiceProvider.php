@@ -2,8 +2,12 @@
 
 namespace Shadowbane\GelfLogger\Providers;
 
+use Illuminate\Queue\Events\JobExceptionOccurred;
+use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Support\ServiceProvider;
 use Shadowbane\GelfLogger\Commands\SendException;
+use Shadowbane\GelfLogger\GelfLogger;
 
 /**
  * Service provider for the Laravel GELF Logger package.
@@ -27,6 +31,15 @@ class GelfServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../../config/logging.php' => config_path('gelf-logger.php'),
         ], 'gelf-logger-config');
+
+        // Buffered logs are flushed at PHP shutdown, which a queue worker
+        // reaches only when it exits. Flush after every job instead, and on
+        // terminate for HTTP and console runs.
+        $this->app['events']->listen(
+            [JobProcessed::class, JobExceptionOccurred::class, JobFailed::class],
+            fn () => GelfLogger::flushBuffers(),
+        );
+        $this->app->terminating(fn () => GelfLogger::flushBuffers());
     }
 
     /**

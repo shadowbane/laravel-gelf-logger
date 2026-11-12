@@ -8,6 +8,8 @@ A custom Laravel Monolog logger for sending logs to Graylog via the GELF (Graylo
 
 - Send Laravel logs directly to Graylog via GELF protocol
 - Supports both **UDP** and **TCP** transports
+- Non-blocking by default: logs are buffered and sent after the response
+- Never throws into your application when Graylog is down or slow
 - Automatic exception tracking with stack traces
 - Custom log context support with additional GELF fields
 - Configurable Monolog processors (Git, Memory, Web, Load Average, Tags)
@@ -17,9 +19,10 @@ A custom Laravel Monolog logger for sending logs to Graylog via the GELF (Graylo
 
 ## Requirements
 
-- PHP ^8.2
-- Laravel 11.x or higher
+- PHP ^8.2 (Laravel 13 needs ^8.3)
+- Laravel 11.x, 12.x or 13.x
 - ext-json
+- ext-mbstring
 - graylog2/gelf-php ^2.0
 - monolog ^3.0
 
@@ -45,6 +48,9 @@ GELF_LOGGER_PORT=12201
 GELF_LOGGER_TRANSPORT=udp
 GELF_LOGGER_LEVEL=warning
 GELF_LOGGER_TAGS=
+GELF_LOGGER_BUFFER=true
+GELF_LOGGER_TIMEOUT=2
+GELF_LOGGER_ERROR_CHANNEL=single
 ```
 
 #### Configuration Options
@@ -56,6 +62,26 @@ GELF_LOGGER_TAGS=
 | `GELF_LOGGER_TRANSPORT` | Transport protocol (`udp` or `tcp`) | `udp` |
 | `GELF_LOGGER_LEVEL` | Minimum log level (debug, info, notice, warning, error, critical, alert, emergency) | `warning` |
 | `GELF_LOGGER_TAGS` | Comma-separated extra tags for Graylog stream filtering | _(empty)_ |
+| `GELF_LOGGER_BUFFER` | Buffer logs and send them after the response instead of one network write per log line | `true` |
+| `GELF_LOGGER_TIMEOUT` | Seconds to wait for a TCP connection to Graylog (whole seconds) | `2` |
+| `GELF_LOGGER_ERROR_CHANNEL` | Laravel log channel that receives delivery failures; without it they are dropped silently | `false` |
+
+### How logs are delivered
+
+With `GELF_LOGGER_BUFFER=true` (the default), log calls return immediately. Records are held in memory and published together:
+
+- **HTTP (php-fpm, FrankenPHP):** at shutdown, after the response has been sent to the client.
+- **Queue workers:** after each job (`JobProcessed`, `JobExceptionOccurred`, `JobFailed`), because a worker process does not shut down between jobs.
+- **Console commands:** when the command terminates.
+- **Large requests:** early, once 1000 records are buffered.
+
+Records still in memory when a process is hard-killed (`SIGKILL`, out-of-memory) are lost. Set `GELF_LOGGER_BUFFER=false` to publish each record as it is logged.
+
+### When Graylog is unavailable
+
+Logging never throws into your application. A failed publish (connection refused, connect timeout, write error) is reported once to `GELF_LOGGER_ERROR_CHANNEL`, if set. When a buffered batch fails, the remaining records of that batch are dropped and the report says how many, so an outage costs at most one connect timeout per flush instead of one per record. Over UDP a missing Graylog cannot be detected, so nothing is reported.
+
+Point `GELF_LOGGER_ERROR_CHANNEL` at a channel that does not include `gelf`, such as `single`. A channel that loops back to `gelf` is guarded against recursion, but its reports are lost.
 
 ### Publishing Configuration
 
@@ -331,6 +357,8 @@ Run PHPStan for static analysis:
 ```bash
 vendor/bin/phpstan analyze
 ```
+
+`phpstan.neon` sets level 5 and the `src` path.
 
 ## License
 

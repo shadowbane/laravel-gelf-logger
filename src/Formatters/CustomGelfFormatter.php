@@ -7,6 +7,8 @@ use Monolog\Formatter\GelfMessageFormatter;
 use Monolog\Level;
 use Monolog\LogRecord;
 use Monolog\Utils;
+use SplObjectStorage;
+use Throwable;
 
 /**
  * Custom GELF message formatter that extends Monolog's GelfMessageFormatter.
@@ -75,25 +77,27 @@ class CustomGelfFormatter extends GelfMessageFormatter
 
         $this->handleExceptions($context, $record->context);
 
+        // gelf-php encodes with JSON_THROW_ON_ERROR, so one invalid UTF-8 byte
+        // in the message would make the log call itself throw.
+        $shortMessage = mb_scrub($record->message, 'UTF-8');
+
         $message = new Message();
         $message
             ->setTimestamp($record->datetime)
-            ->setShortMessage($record->message)
+            ->setShortMessage($shortMessage)
             ->setHost($this->systemName)
             ->setLevel($this->getGraylog2Priority($record->level));
 
         $this->setAdditionalData($message, $record->level);
 
         // message length + system name length + 200 for padding / metadata
-        $len = 200 + strlen($record->message) + strlen($this->systemName);
+        $len = 200 + strlen($shortMessage) + strlen($this->systemName);
 
         if ($len > $this->maxLength) {
-            $message->setShortMessage(Utils::substr($record->message, 0, $this->maxLength));
+            $message->setShortMessage(Utils::substr($shortMessage, 0, $this->maxLength));
         }
 
-        if (isset($record->channel)) {
-            $message->setAdditional('facility', $record->channel);
-        }
+        $message->setAdditional('facility', $record->channel);
 
         // Split extra into processor data (top-level) and Laravel Context data (into extras)
         $contextExtras = [];
@@ -252,7 +256,7 @@ class CustomGelfFormatter extends GelfMessageFormatter
      * @param  array<string, mixed>  &$context  The normalized context array (modified in place)
      * @param  array<string, mixed>  $contextRecord  The original context from the log record
      */
-    private function handleExceptions(array &$context, mixed $contextRecord): void
+    private function handleExceptions(array &$context, array $contextRecord): void
     {
         if (!isset($context['exception'])) {
             return;
@@ -266,10 +270,9 @@ class CustomGelfFormatter extends GelfMessageFormatter
             return;
         }
 
-        /** @var \Throwable|null $throwable */
-        $throwable = is_array($contextRecord) ? ($contextRecord['exception'] ?? null) : null;
+        $throwable = $contextRecord['exception'] ?? null;
 
-        if ($throwable instanceof \Throwable) {
+        if ($throwable instanceof Throwable) {
             $context['exception_trace'] = $this->formatThrowableChain($throwable);
             unset($context['trace'], $context['exception']['trace']);
         }
@@ -289,16 +292,17 @@ class CustomGelfFormatter extends GelfMessageFormatter
      * rendered, in full — deciding which frames matter is the reader's job, not
      * this formatter's.
      *
-     * @param  \Throwable  $throwable
+     * @param  Throwable  $throwable
+     *
      * @return string
      */
-    private function formatThrowableChain(\Throwable $throwable): string
+    private function formatThrowableChain(Throwable $throwable): string
     {
         $parts = [];
 
         // Termination guard only. A `previous` cycle cannot occur through normal
         // construction, and this drops nothing that a linear chain would report.
-        $seen = new \SplObjectStorage;
+        $seen = new SplObjectStorage();
 
         do {
             $seen->attach($throwable);

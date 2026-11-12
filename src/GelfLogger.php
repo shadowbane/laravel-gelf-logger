@@ -10,10 +10,13 @@ use Gelf\Transport\UdpTransport;
 use InvalidArgumentException;
 use Monolog\Formatter\FormatterInterface;
 use Monolog\Handler\AbstractProcessingHandler;
+use Monolog\Handler\BufferHandler;
+use Monolog\Handler\HandlerInterface;
 use Monolog\Level;
 use Monolog\Logger;
 use Monolog\Processor\TagProcessor;
 use Shadowbane\GelfLogger\Formatters\CustomGelfFormatter;
+use WeakMap;
 
 /**
  * Factory class that creates a configured Monolog Logger for GELF output.
@@ -27,6 +30,14 @@ use Shadowbane\GelfLogger\Formatters\CustomGelfFormatter;
 class GelfLogger
 {
     /**
+     * Buffers created by this factory, so long-running processes can flush
+     * them between units of work. Weakly held: a forgotten channel is freed.
+     *
+     * @var WeakMap<BufferHandler, true>|null
+     */
+    private static ?WeakMap $buffers = null;
+
+    /**
      * The logging channel configuration.
      *
      * @var array{
@@ -39,6 +50,9 @@ class GelfLogger
      *     host: string,
      *     port: int,
      *     tags?: array<int, string>,
+     *     buffer?: bool|string,
+     *     timeout?: int|string,
+     *     error?: string|false|null,
      *     processors?: array<int, class-string|array{processor: class-string, with?: array<string, mixed>}>,
      * }
      */
@@ -70,7 +84,7 @@ class GelfLogger
 
         return new Logger(
             name: 'gelf',
-            handlers: [$this->createHandler()],
+            handlers: [$this->wrapInBuffer($this->createHandler())],
             processors: $this->getProcessors(),
             timezone: new DateTimeZone('UTC'),
         );
@@ -114,7 +128,47 @@ class GelfLogger
 
         $handler->setFormatter($this->getFormatter());
 
+        if (method_exists($handler, 'setErrorChannel')) {
+            $errorChannel = $this->config['error'] ?? null;
+            $handler->setErrorChannel(blank($errorChannel) || $errorChannel === false ? null : (string) $errorChannel);
+        }
+
         return $handler;
+    }
+
+    /**
+     * Wrap the handler in a buffer that sends its records in one go.
+     *
+     * Records are held in memory and published when the buffer is flushed:
+     * at PHP shutdown (after the response on php-fpm and FrankenPHP), after
+     * each queued job, or early if a single request logs 1000 records.
+     *
+     * @param  AbstractProcessingHandler  $handler  The configured GELF handler
+     *
+     * @return HandlerInterface
+     */
+    private function wrapInBuffer(AbstractProcessingHandler $handler): HandlerInterface
+    {
+        if (!filter_var($this->config['buffer'] ?? true, FILTER_VALIDATE_BOOL)) {
+            return $handler;
+        }
+
+        $buffer = new BufferHandler($handler, 1000, $this->getLevel(), true, true);
+
+        self::$buffers ??= new WeakMap();
+        self::$buffers[$buffer] = true;
+
+        return $buffer;
+    }
+
+    /**
+     * Send everything currently buffered.
+     */
+    public static function flushBuffers(): void
+    {
+        foreach (self::$buffers ?? [] as $buffer => $_) {
+            $buffer->flush();
+        }
     }
 
     /**
@@ -143,10 +197,26 @@ class GelfLogger
     private function getPublisher(): PublisherInterface
     {
         return match ($this->getTransport()) {
-            'tcp' => new Publisher(new TcpTransport($this->getHost(), $this->getPort())),
+            'tcp' => new Publisher($this->createTcpTransport()),
             'udp' => new Publisher(new UdpTransport($this->getHost(), $this->getPort())),
             default => throw new InvalidArgumentException("Invalid GELF transport type [{$this->getTransport()}]. Supported: tcp, udp."),
         };
+    }
+
+    /**
+     * Create the TCP transport with a bounded connect timeout.
+     *
+     * @return TcpTransport
+     */
+    private function createTcpTransport(): TcpTransport
+    {
+        $transport = new TcpTransport($this->getHost(), $this->getPort());
+
+        // gelf-php waits 30 seconds by default, which stalls a request for as
+        // long whenever Graylog is unreachable. Whole seconds only.
+        $transport->setConnectTimeout(max(1, (int) ($this->config['timeout'] ?? 2)));
+
+        return $transport;
     }
 
     /**
@@ -165,6 +235,8 @@ class GelfLogger
         // Remove any user-defined TagProcessor — we'll add our own with merged tags
         $processorArray = $processorArray->reject(function ($processor) {
             return $processor === TagProcessor::class
+                // Config is user-written, so the documented shape is not guaranteed.
+                // @phpstan-ignore nullCoalesce.offset
                 || (is_array($processor) && ($processor['processor'] ?? null) === TagProcessor::class);
         });
 

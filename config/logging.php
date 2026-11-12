@@ -20,6 +20,18 @@ return [
         'host' => env('GELF_LOGGER_HOST', '127.0.0.1'),
         'port' => env('GELF_LOGGER_PORT', 12201),
 
+        // Buffer records and send them after the response, instead of one
+        // network write per log line.
+        'buffer' => env('GELF_LOGGER_BUFFER', true),
+
+        // Seconds to wait for a TCP connection to Graylog (whole seconds).
+        'timeout' => env('GELF_LOGGER_TIMEOUT', 2),
+
+        // Laravel log channel that receives delivery failures (e.g. 'single').
+        // Logging never throws into the application; without this channel,
+        // failures are dropped silently.
+        'error' => env('GELF_LOGGER_ERROR_CHANNEL', false),
+
         // Tags for Graylog stream routing.
         // 'glfapp' is always included (required by Graylog stream rules).
         // Add extra tags here per-app for filtering within the stream.
